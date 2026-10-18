@@ -188,6 +188,7 @@
     closePanels();
     panelReturnFocus = document.activeElement;
     panel.hidden = false;
+    pushLayer();
     const first = panel.querySelector('[data-close]');
     if (first) first.focus({ preventScroll: true });
   }
@@ -198,6 +199,33 @@
     els.settingsPanel.hidden = true;
     if (wasOpen && panelReturnFocus && document.contains(panelReturnFocus)) panelReturnFocus.focus({ preventScroll: true });
   }
+
+  // ---------------------------------------------------------------- 返回鍵
+  // 書架之上，「閱讀頁」「面板」「休息提醒」各佔一層瀏覽紀錄。手機的返回鍵／返回手勢會一層層退回，
+  // 而不是直接離開閱讀器；畫面上的「‹ 書架」「關閉」「略過」也走同一條路，紀錄才不會錯位。
+  const NAV = 'inkReaderLayer';
+  const layers = () => (current && !els.reader.hidden ? 1 : 0) + (openPanelEl() ? 1 : 0) + (els.restPanel.hidden ? 0 : 1);
+  const navDepth = () => (history.state && history.state[NAV]) || 0;
+
+  function pushLayer() {
+    if (navDepth() < layers()) history.pushState({ [NAV]: layers() }, '');
+  }
+
+  function closeTopLayer() {
+    if (!els.restPanel.hidden) endRest();
+    else if (openPanelEl()) closePanels();
+    else if (current) { closeBook(); showView('library'); }
+  }
+
+  // 關掉最上面一層：這一層有自己的瀏覽紀錄就 history.back()，交給 popstate 去關
+  function popLayer() {
+    if (layers() > 0 && navDepth() === layers()) history.back();
+    else { closeTopLayer(); history.replaceState({ [NAV]: layers() }, ''); }
+  }
+
+  window.addEventListener('popstate', () => {
+    for (let guard = 3; guard > 0 && layers() > navDepth(); guard--) closeTopLayer();
+  });
 
   function toggleMenu(force) {
     const open = typeof force === 'boolean' ? force : els.menu.hidden;
@@ -330,6 +358,7 @@
       closeBook();
       current = { book, doc, total: doc.chapters.reduce((s, c) => s + c.size, 0) };
       showView('reader');
+      pushLayer();
       els.toast.hidden = true; // 匯入時的提示不要帶進閱讀頁
       els.stTitle.textContent = book.title;
       session.lastInput = Date.now();
@@ -339,6 +368,7 @@
       toast('無法開啟：' + err.message, 5000);
       closeBook();
       showView('library');
+      history.replaceState({ [NAV]: layers() }, '');
     }
   }
 
@@ -422,7 +452,7 @@
       b.dataset.depth = Math.min(2, t.depth || 0);
       if (i === here) b.setAttribute('aria-current', 'true');
       b.addEventListener('click', () => {
-        closePanels();
+        popLayer();
         toggleMenu(false);
         pager.goTo(t.ch, t.frag ? { frag: t.frag } : 'start');
       });
@@ -573,6 +603,7 @@
         els.restDone.textContent = '繼續閱讀';
       }
     }, 1000);
+    pushLayer();
     els.restDone.focus({ preventScroll: true });
   }
 
@@ -667,11 +698,11 @@
     if (e.altKey || e.ctrlKey || e.metaKey) return;
     const k = e.key;
     if (!els.restPanel.hidden) {
-      if (k === 'Escape') endRest();
+      if (k === 'Escape') popLayer();
       return;
     }
     if (k === 'Escape') {
-      if (openPanelEl()) closePanels();
+      if (openPanelEl()) popLayer();
       else if (!els.menu.hidden) toggleMenu(false);
       return;
     }
@@ -693,11 +724,11 @@
   // 機身三顆鍵：閱讀時是 上一頁／選單／下一頁；書架上是 上一本／打開／下一本
   function deviceKey(k) {
     session.lastInput = Date.now();
-    if (!els.restPanel.hidden) { if (k === 'menu') endRest(); return; }
+    if (!els.restPanel.hidden) { if (k === 'menu') popLayer(); return; }
     const panel = openPanelEl();
     if (panel) {
       const body = panel.querySelector('.panel-body');
-      if (k === 'menu') closePanels();
+      if (k === 'menu') popLayer();
       else body.scrollTop += (k === 'next' ? 1 : -1) * body.clientHeight * 0.8;
       return;
     }
@@ -722,12 +753,12 @@
     const act = e.target.closest('[data-act]');
     if (act) {
       const a = act.dataset.act;
-      if (a === 'library') { closeBook(); showView('library'); }
+      if (a === 'library') popLayer();
       else if (a === 'toc') openToc();
       else if (a === 'settings') openSettings();
       return;
     }
-    if (e.target.closest('[data-close]')) closePanels();
+    if (e.target.closest('[data-close]')) popLayer();
   });
 
   $('#btnImport').addEventListener('click', () => els.fileInput.click());
@@ -740,7 +771,7 @@
     const [id] = await importFiles([file]);
     if (id) openBook(id);
   });
-  els.restDone.addEventListener('click', endRest);
+  els.restDone.addEventListener('click', popLayer);
 
   // 拖放匯入
   let dragDepth = 0;
@@ -755,7 +786,12 @@
     e.preventDefault();
     dragDepth = 0;
     els.screen.classList.remove('dropping');
-    if (current) { closeBook(); showView('library'); }
+    if (current) {
+      const depth = navDepth();
+      closeBook();
+      showView('library');
+      if (depth) history.go(-depth); // 把閱讀頁以上的紀錄一併退掉
+    }
     importFiles(e.dataTransfer.files);
   });
 
@@ -764,10 +800,17 @@
 
   // ---------------------------------------------------------------- 啟動
 
+  // 重新整理後一律從書架開始；舊的層級紀錄歸零，避免返回鍵對不上
+  if (navDepth()) history.replaceState({ [NAV]: 0 }, '');
   applySettings();
   renderLibrary();
   tick();
   setInterval(tick, 1000);
+
+  // 離線快取（只在 http/https 下可用；直接開 file:// 時略過）
+  if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  }
 
   // 給除錯／測試用
   R.app = { settings, applySettings, importFiles, openBook, pager, get current() { return current; } };
