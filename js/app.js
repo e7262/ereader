@@ -20,6 +20,7 @@
     refresh: false, // 擬真翻頁刷新（閃爍），預設關閉
     rest: 20, // 休息提醒間隔（分鐘），0 = 關閉
     frame: true,
+    wake: false, // 閱讀時螢幕常亮（選用）
   };
   const LEADING = { tight: 1.6, normal: 1.85, loose: 2.1 };
   const MEASURE = { narrow: 26, medium: 34, wide: 44 }; // 每行最多幾個全形字
@@ -57,6 +58,11 @@
     led: $('#led'),
     fileInput: $('#fileInput'),
   };
+
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  // Android 有些檔案管理員把 EPUB 回報成 application/octet-stream，只寫 .epub 會被反灰；格式在匯入時另外檢查
+  if (/Android/i.test(navigator.userAgent)) els.fileInput.accept += ',application/octet-stream';
 
   const pager = new R.Paginator(els.pageArea, els.flow);
   let current = null; // { book, doc, total }
@@ -156,6 +162,11 @@
     if (ms !== 0) toastTimer = setTimeout(() => { els.toast.hidden = true; }, ms || 2600);
   }
 
+  // 用觸控時不要在按鈕上畫焦點框；用鍵盤時才畫
+  function focusQuiet(target) {
+    if (target) target.focus({ preventScroll: true, focusVisible: root.dataset.input === 'key' });
+  }
+
   function hhmm(d) { return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 
   // WCAG 相對亮度與對比值，用來在設定頁顯示目前配色的實際數字
@@ -189,15 +200,14 @@
     panelReturnFocus = document.activeElement;
     panel.hidden = false;
     pushLayer();
-    const first = panel.querySelector('[data-close]');
-    if (first) first.focus({ preventScroll: true });
+    focusQuiet(panel.querySelector('[data-close]'));
   }
 
   function closePanels() {
     const wasOpen = openPanelEl();
     els.tocPanel.hidden = true;
     els.settingsPanel.hidden = true;
-    if (wasOpen && panelReturnFocus && document.contains(panelReturnFocus)) panelReturnFocus.focus({ preventScroll: true });
+    if (wasOpen && panelReturnFocus && document.contains(panelReturnFocus)) focusQuiet(panelReturnFocus);
   }
 
   // ---------------------------------------------------------------- 返回鍵
@@ -207,8 +217,16 @@
   const layers = () => (current && !els.reader.hidden ? 1 : 0) + (openPanelEl() ? 1 : 0) + (els.restPanel.hidden ? 0 : 1);
   const navDepth = () => (history.state && history.state[NAV]) || 0;
 
+  let backPending = 0;
+
   function pushLayer() {
     if (navDepth() < layers()) history.pushState({ [NAV]: layers() }, '');
+  }
+
+  // 紀錄比畫面多（按了瀏覽器的「下一頁」、或重新整理後殘留）時，退回到和畫面一致
+  function trimHistory() {
+    const extra = navDepth() - layers();
+    if (extra > 0) history.go(-extra);
   }
 
   function closeTopLayer() {
@@ -219,12 +237,22 @@
 
   // 關掉最上面一層：這一層有自己的瀏覽紀錄就 history.back()，交給 popstate 去關
   function popLayer() {
-    if (layers() > 0 && navDepth() === layers()) history.back();
-    else { closeTopLayer(); history.replaceState({ [NAV]: layers() }, ''); }
+    if (backPending) return; // 連點兩下「關閉」時，第二下不要再退一層而離開閱讀器
+    if (layers() > 0 && navDepth() === layers()) {
+      backPending = setTimeout(() => { backPending = 0; }, 800);
+      history.back();
+    } else {
+      closeTopLayer();
+      if (navDepth() > layers()) trimHistory();
+      else history.replaceState({ [NAV]: layers() }, '');
+    }
   }
 
   window.addEventListener('popstate', () => {
+    clearTimeout(backPending);
+    backPending = 0;
     for (let guard = 3; guard > 0 && layers() > navDepth(); guard--) closeTopLayer();
+    trimHistory();
   });
 
   function toggleMenu(force) {
@@ -297,7 +325,8 @@
   async function updateStorage() {
     try {
       const { usage } = await navigator.storage.estimate();
-      els.storage.textContent = '本機已用 ' + formatSize(usage);
+      const kept = navigator.storage.persisted ? await navigator.storage.persisted() : false;
+      els.storage.textContent = '本機已用 ' + formatSize(usage) + (kept ? ' · 已設為永久保存' : '');
     } catch (e) {
       els.storage.textContent = '書只存在這台裝置';
     }
@@ -350,11 +379,15 @@
   // ---------------------------------------------------------------- 閱讀
 
   async function openBook(id) {
+    // 在點擊當下就記一層紀錄：Safari 只承認使用者操作後不久建立的紀錄，大本 EPUB 解析可能要一點時間
+    const pushed = !current && navDepth() === 0;
+    if (pushed) history.pushState({ [NAV]: 1 }, '');
     try {
       const [book, blob] = await Promise.all([R.db.getBook(id), R.db.getFile(id)]);
       if (!book || !blob) throw new Error('找不到檔案');
       const buf = await blob.arrayBuffer();
       const doc = book.format === 'epub' ? await R.epub.parse(buf) : R.txt.parse(buf, book.fileName || book.title);
+      if (pushed && navDepth() !== 1) { doc.dispose(); return; } // 載入途中已經按了返回
       closeBook();
       current = { book, doc, total: doc.chapters.reduce((s, c) => s + c.size, 0) };
       showView('reader');
@@ -363,17 +396,19 @@
       els.stTitle.textContent = book.title;
       session.lastInput = Date.now();
       await pager.open(doc, book.pos);
+      holdWake();
     } catch (err) {
       console.error(err);
       toast('無法開啟：' + err.message, 5000);
       closeBook();
       showView('library');
-      history.replaceState({ [NAV]: layers() }, '');
+      trimHistory();
     }
   }
 
   function closeBook() {
     if (!current) return;
+    dropWake();
     saveProgress();
     pager.close();
     current.doc.dispose();
@@ -419,6 +454,8 @@
   function turn(dir) {
     if (!current) return;
     session.lastInput = Date.now();
+    holdWake();
+    if (restDue) { restDue = false; showRest(); return; }
     if (!els.menu.hidden) { toggleMenu(false); return; }
     const moved = dir > 0 ? pager.next() : pager.prev();
     if (!moved && !pager.busy) toast(dir > 0 ? '已經是最後一頁' : '已經是第一頁', 1500);
@@ -477,7 +514,10 @@
       key: 'brightness', label: '亮度', step: () => [30, 100, 10], fmt: (v) => v + '%',
       note: () => settings.brightness < 100 ? '軟體調暗：可比系統最低亮度更暗，適合關燈前讀' : '',
     },
-    { key: 'font', label: '字型', get: fontKey, set: setFont, options: [['serif', '明體'], ['sans', '黑體'], ['kai', '楷體'], ['pixel', '像素']] },
+    {
+      key: 'font', label: '字型', get: fontKey, set: setFont, options: [['serif', '明體'], ['sans', '黑體'], ['kai', '楷體'], ['pixel', '像素']],
+      note: () => fontMissing[fontKey()] ? '這台裝置似乎沒有內建' + (fontKey() === 'kai' ? '楷體' : '明體') + '，會以系統字型顯示（像素字型則隨閱讀器附帶）' : '',
+    },
     {
       key: 'size', label: '字級',
       get: () => (isPixel() ? settings.pixelScale : settings.fontSize),
@@ -498,17 +538,22 @@
       note: () => settings.rest ? '連續閱讀 ' + settings.rest + ' 分鐘後提醒你看遠方 20 秒' : '',
     },
     { key: 'frame', label: '外框', options: [[true, '顯示'], [false, '隱藏']], note: () => '只在寬螢幕上顯示裝置外殼' },
+    {
+      key: 'wake', label: '常亮', options: [[false, '關'], [true, '閱讀時']], when: () => 'wakeLock' in navigator,
+      note: () => settings.wake ? '閱讀時螢幕不自動變暗；三分鐘沒翻頁就恢復自動鎖定' : '',
+    },
   ];
 
   function getSetting(row) { return row.get ? row.get() : settings[row.key]; }
   function setSetting(row, v) {
     if (row.set) row.set(v); else settings[row.key] = v;
     applySettings();
+    if (row.key === 'wake') { if (v) holdWake(); else dropWake(); }
     renderSettings(row.key + ':' + String(v));
   }
 
   function renderSettings(focusId) {
-    const rows = SCHEMA.map((row) => {
+    const rows = SCHEMA.filter((row) => !row.when || row.when()).map((row) => {
       const wrap = el('div', 'setting');
       wrap.append(el('span', null, row.label));
       const value = getSetting(row);
@@ -538,11 +583,7 @@
       }
       wrap.append(box);
       const note = row.note && row.note();
-      if (note) {
-        const p = el('p', 'note', note);
-        p.style.gridColumn = '2';
-        wrap.append(p);
-      }
+      if (note) wrap.append(el('p', 'note', note));
       return wrap;
     });
     els.settings.replaceChildren(...rows);
@@ -583,6 +624,7 @@
   // ---------------------------------------------------------------- 20-20-20 休息提醒
 
   const session = { active: 0, last: Date.now(), lastInput: Date.now(), hiddenAt: 0 };
+  let restDue = false; // 時間到了，等下一次翻頁時再提醒（翻頁的空檔最不打斷閱讀）
   let restTimer = 0;
   let stopRestPet = null;
 
@@ -603,11 +645,13 @@
         els.restDone.textContent = '繼續閱讀';
       }
     }, 1000);
-    pushLayer();
-    els.restDone.focus({ preventScroll: true });
+    // 沒有使用者操作時（例如滾輪）不建立瀏覽紀錄，否則瀏覽器會把這些紀錄當成騷擾而跳過
+    if (!navigator.userActivation || navigator.userActivation.isActive) pushLayer();
+    focusQuiet(els.restDone);
   }
 
   function endRest() {
+    restDue = false;
     clearInterval(restTimer);
     if (stopRestPet) stopRestPet();
     els.restPanel.hidden = true;
@@ -629,7 +673,8 @@
     if (current && !els.reader.hidden && !document.hidden && els.restPanel.hidden && now - session.lastInput < 180000 && dt < 5000) {
       session.active += dt;
     }
-    if (current && settings.rest && session.active >= settings.rest * 60000 && els.restPanel.hidden && !els.reader.hidden) showRest();
+    if (current && settings.rest && session.active >= settings.rest * 60000 && els.restPanel.hidden && !els.reader.hidden) restDue = true;
+    if (wakeSentinel && now - session.lastInput > 180000) dropWake(); // 讀到睡著時，讓螢幕照常自動鎖定
     updateLed();
 
     const clock = hhmm(new Date());
@@ -647,21 +692,38 @@
     if (document.hidden) {
       session.hiddenAt = Date.now();
       saveProgress();
-    } else if (session.hiddenAt && Date.now() - session.hiddenAt > 5 * 60000) {
-      session.active = 0; // 離開超過五分鐘，當作已經休息過
+    } else {
+      if (session.hiddenAt && Date.now() - session.hiddenAt > 5 * 60000) session.active = 0; // 離開超過五分鐘，當作已經休息過
+      holdWake();
     }
   });
   window.addEventListener('pagehide', saveProgress);
 
   // ---------------------------------------------------------------- 輸入：點、滑、滾輪、鍵盤、實體鍵
 
+  // 記住目前用的是觸控、滑鼠還是鍵盤，用來決定要不要畫焦點框
+  addEventListener('pointerdown', (e) => { root.dataset.input = e.pointerType === 'mouse' ? 'mouse' : 'touch'; }, true);
+  addEventListener('keydown', () => { root.dataset.input = 'key'; }, true);
+  // iOS 需要有 touchstart 監聽，按鈕的 :active 按下效果才會出現
+  document.addEventListener('touchstart', () => {}, { passive: true });
+
+  const zoomed = () => !!window.visualViewport && visualViewport.scale > 1.05;
+  // 雙指放大後允許單指拖移畫面，此時點擊不翻頁
+  if (window.visualViewport) {
+    visualViewport.addEventListener('resize', () => { els.pageArea.style.touchAction = zoomed() ? 'pan-x pan-y pinch-zoom' : ''; });
+  }
+
+  let ghostClick = false;
+  addEventListener('pointerdown', () => { ghostClick = false; }, true);
+
   let down = null;
   els.pageArea.addEventListener('pointerdown', (e) => {
-    if (e.button === 0) down = { x: e.clientX, y: e.clientY };
+    down = e.button === 0 && e.isPrimary ? { x: e.clientX, y: e.clientY } : null;
   });
   els.pageArea.addEventListener('pointercancel', () => { down = null; });
   els.pageArea.addEventListener('pointerup', (e) => {
-    if (!down || !current) return;
+    if (!down || !current || !e.isPrimary) return;
+    if (zoomed()) { down = null; return; }
     const dx = e.clientX - down.x;
     const dy = e.clientY - down.y;
     down = null;
@@ -681,11 +743,16 @@
     const x = (e.clientX - rect.left) / rect.width;
     if (x < 0.3) turn(-1);
     else if (x > 0.7) turn(1);
-    else toggleMenu(true);
+    else {
+      toggleMenu(true);
+      ghostClick = true;
+      setTimeout(() => { ghostClick = false; }, 600);
+    }
   });
 
   let wheelLock = 0;
   els.pageArea.addEventListener('wheel', (e) => {
+    if (e.ctrlKey) return; // 觸控板的雙指縮放
     e.preventDefault();
     const d = Math.abs(e.deltaY) >= Math.abs(e.deltaX) ? e.deltaY : e.deltaX;
     const now = Date.now();
@@ -752,6 +819,9 @@
   document.addEventListener('click', (e) => {
     const act = e.target.closest('[data-act]');
     if (act) {
+      // 點畫面中央叫出選單時，手指放開後瀏覽器補發的 click 可能剛好落在選單按鈕上：
+      // 從那次點擊之後還沒有新的按下動作，這個 click 就不是使用者點的
+      if (ghostClick && act.closest('#menu')) { ghostClick = false; return; }
       const a = act.dataset.act;
       if (a === 'library') popLayer();
       else if (a === 'toc') openToc();
@@ -795,21 +865,78 @@
     importFiles(e.dataTransfer.files);
   });
 
+  // ---------------------------------------------------------------- 螢幕常亮（選用）
+
+  let wakeSentinel = null;
+  let wakePending = false;
+  function holdWake() {
+    if (!settings.wake || !current || wakeSentinel || wakePending || document.visibilityState !== 'visible' || !('wakeLock' in navigator)) return;
+    wakePending = true;
+    navigator.wakeLock.request('screen').then((sentinel) => {
+      wakeSentinel = sentinel;
+      sentinel.addEventListener('release', () => { if (wakeSentinel === sentinel) wakeSentinel = null; });
+      if (!current || !settings.wake) dropWake();
+    }, () => {}).finally(() => { wakePending = false; });
+  }
+  function dropWake() {
+    if (wakeSentinel) wakeSentinel.release().catch(() => {});
+    wakeSentinel = null;
+  }
+
+  // ---------------------------------------------------------------- 手機上的字型與儲存
+
+  // iPhone 沒有內建可用的中文明體、楷體，Android 也沒有楷體；選了會以系統字型顯示，在設定裡標註
+  const FONT_PROBES = {
+    serif: ['Noto Serif CJK TC', 'NotoSerifCJKtc-Regular', 'Noto Serif TC', 'NotoSerifTC-Regular', 'Source Han Serif TC', 'Source Han Serif TW',
+      'Songti TC Regular', 'STSongti-TC-Regular', 'PMingLiU', 'MingLiU', 'Noto Serif CJK SC', 'NotoSerifCJKsc-Regular', 'Songti SC Regular', 'SimSun'],
+    kai: ['TW-Kai', 'BiauKai', 'DFKai-SB', 'Kaiti TC Regular', 'STKaitiTC-Regular', 'STKaiti', 'KaiTi', 'LXGW WenKai TC', 'LXGWWenKaiTC-Regular', 'LXGW WenKai'],
+  };
+  const fontMissing = {};
+  function probeFonts() {
+    if (typeof FontFace !== 'function') return;
+    for (const key of Object.keys(FONT_PROBES)) {
+      const face = new FontFace('ink-probe-' + key, FONT_PROBES[key].map((n) => 'local("' + n + '")').join(', '));
+      // 舊版 Safari 找不到字時不會回報失敗，所以設逾時；逾時就當作「不知道」，不標註
+      const timeout = new Promise((resolve) => setTimeout(() => resolve('unknown'), 1500));
+      Promise.race([face.load().then(() => 'ok', () => 'missing'), timeout]).then((result) => {
+        if (result !== 'missing') return;
+        fontMissing[key] = true;
+        if (!els.settingsPanel.hidden) renderSettings();
+      });
+    }
+  }
+
+  // iPhone 的 Safari 分頁與「加入主畫面」後的 App 各有各的書架，而且分頁裡的資料久未開啟可能被清掉
+  function iosTip() {
+    const tip = $('#iosTip');
+    let seen = false;
+    try { seen = localStorage.getItem('ink-lcd-reader:ios-tip') === '1'; } catch (e) { /* 無法存取時照常顯示 */ }
+    tip.hidden = !isIOS || standalone || seen;
+    tip.querySelector('button').addEventListener('click', () => {
+      tip.hidden = true;
+      try { localStorage.setItem('ink-lcd-reader:ios-tip', '1'); } catch (e) { /* 忽略 */ }
+    });
+  }
+
   new ResizeObserver(scheduleRelayout).observe(els.pageArea);
   if (document.fonts) document.fonts.addEventListener('loadingdone', scheduleRelayout);
 
   // ---------------------------------------------------------------- 啟動
 
-  // 重新整理後一律從書架開始；舊的層級紀錄歸零，避免返回鍵對不上
-  if (navDepth()) history.replaceState({ [NAV]: 0 }, '');
+  // 重新整理後一律從書架開始；把殘留的層級紀錄退掉，返回鍵才對得上
+  if (navDepth()) history.go(-navDepth());
   applySettings();
   renderLibrary();
+  iosTip();
+  probeFonts();
+  // 從主畫面開啟時，請瀏覽器把書架設為永久保存（iOS 主畫面 App 本來就受保護，這裡只是確認）
+  if (standalone && navigator.storage && navigator.storage.persist) navigator.storage.persist().then(updateStorage, () => {});
   tick();
   setInterval(tick, 1000);
 
   // 離線快取（只在 http/https 下可用；直接開 file:// 時略過）
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
-    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {}));
   }
 
   // 給除錯／測試用

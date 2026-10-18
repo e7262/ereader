@@ -2,7 +2,7 @@
    策略是 stale-while-revalidate：先用快取立刻開啟，背景再向網站確認有沒有新版，下次開啟就是新版。 */
 'use strict';
 
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = 'ink-reader-' + VERSION;
 const SHELL = [
   './',
@@ -25,7 +25,12 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: 'reload'：繞過 GitHub Pages 的 10 分鐘 HTTP 快取，裝進來的一定是剛發佈的檔案
+  event.waitUntil(
+    caches.open(CACHE)
+      .then((cache) => cache.addAll(SHELL.map((url) => new Request(url, { cache: 'reload' }))))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', (event) => {

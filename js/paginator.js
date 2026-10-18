@@ -87,7 +87,7 @@
 
     async open(doc, pos) {
       this.doc = doc;
-      this.flow.lang = doc.meta.lang || 'zh';
+      this.flow.lang = doc.meta.lang || 'zh-Hant';
       const ch = pos && pos.ch < doc.chapters.length ? pos.ch : 0;
       await this.show(ch, pos || 'start');
     }

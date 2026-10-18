@@ -132,7 +132,8 @@
       if (TRAD.includes(ch)) t++;
       else if (SIMP.includes(ch)) s++;
     }
-    if (t + s < 10) return /[぀-ヿ]/.test(sample) ? 'ja' : (/[一-鿿]/.test(sample) ? 'zh' : 'en');
+    // 判斷不出繁簡時用 zh-Hant：Android 的 Chrome 把單純的 zh 當成簡體，會換成簡體字形
+    if (t + s < 10) return /[\u3040-\u30ff]/.test(sample) ? 'ja' : (/[\u4e00-\u9fff]/.test(sample) ? 'zh-Hant' : 'en');
     return t >= s ? 'zh-Hant' : 'zh-Hans';
   }
 
@@ -175,5 +176,5 @@
     };
   }
 
-  R.txt = { parse, decode };
+  R.txt = { parse, decode, guessLang };
 })(window.Reader = window.Reader || {});

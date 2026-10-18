@@ -11,9 +11,11 @@
 }
 
 :root {
-  --font-serif: "Noto Serif TC", "Noto Serif CJK TC", "Source Han Serif TC", "Source Han Serif", "Songti TC", "PMingLiU", "MingLiU", "Noto Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", Georgia, serif;
-  --font-sans: "Noto Sans TC", "Noto Sans CJK TC", "Source Han Sans TC", "PingFang TC", "Microsoft JhengHei", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-  --font-kai: "TW-Kai", "BiauKai", "DFKai-SB", "Kaiti TC", "STKaiti", "KaiTi", "LXGW WenKai TC", "LXGW WenKai", "Noto Serif TC", serif;
+  /* 手機上真正決定中文字型的是最後的通用字族加上 lang：Android 會用 Noto Serif／Sans CJK，
+     iPhone 沒有內建中文明體與楷體，三種都會以蘋方顯示。前面列的字名主要給桌機用。 */
+  --font-serif: "Noto Serif TC", "Noto Serif CJK TC", "Source Han Serif TC", "Source Han Serif TW", "Songti TC", "PMingLiU", "MingLiU", "Noto Serif SC", "Noto Serif CJK SC", "Source Han Serif SC", "Source Han Serif CN", "Songti SC", "STSong", "SimSun", Georgia, serif;
+  --font-sans: "Noto Sans TC", "Noto Sans CJK TC", "Source Han Sans TC", "Source Han Sans TW", "Microsoft JhengHei", "Noto Sans SC", "Noto Sans CJK SC", "Source Han Sans SC", "Source Han Sans CN", "Microsoft YaHei", system-ui, sans-serif;
+  --font-kai: "TW-Kai", "BiauKai", "DFKai-SB", "Kaiti TC", "STKaiti", "Kaiti SC", "KaiTi", "LXGW WenKai TC", "LXGW WenKai", serif;
   --font-pixel: "Fusion Pixel TC", ui-monospace, monospace;
 
   /* 由 app.js 依設定寫入 */
@@ -157,13 +159,21 @@
 /* ---------- 版面：桌面上是一台「裝置」，手機上螢幕就是整個畫面 ---------- */
 
 * { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; }
+html, body { height: 100%; margin: 0; overscroll-behavior: none; }
 body {
-  background: var(--desk);
+  /* 手機上整個視窗就是螢幕；只有桌面裝置外框模式才露出桌面色（見下方 media query） */
+  background: var(--bg);
   font-family: var(--ui-font);
   overflow: hidden;
   -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
+}
+button { touch-action: manipulation; } /* 按鈕不觸發雙擊放大，也沒有點擊延遲；頁面仍可雙指縮放 */
+.bar, .status, .menu, .keys, .btn, .book, .toc, .shell-head, .setting > span {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 [hidden] { display: none !important; }
 button { font: inherit; color: inherit; }
@@ -191,14 +201,18 @@ button { font: inherit; color: inherit; }
   line-height: 1.5;
   isolation: isolate;
 }
+/* 瀏海、圓角與手勢列：用 top/right/bottom/left 把內容區縮進安全範圍
+   （.view 等子元素是絕對定位，padding 對它們無效）；底色仍由 .screen 鋪滿整個畫面 */
 .content {
   position: absolute;
-  inset: 0;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  top: env(safe-area-inset-top, 0px);
+  right: env(safe-area-inset-right, 0px);
+  bottom: env(safe-area-inset-bottom, 0px);
+  left: env(safe-area-inset-left, 0px);
 }
 
 @media (min-width: 760px) and (min-height: 640px) {
-  [data-frame="on"] body { display: grid; place-items: center; }
+  [data-frame="on"] body { display: grid; place-items: center; background: var(--desk); }
   [data-frame="on"] .device {
     width: min(calc((100dvh - 56px) * .7), 740px);
     height: min(calc(100dvh - 56px), 1060px);
@@ -414,6 +428,7 @@ button { font: inherit; color: inherit; }
 
 :focus { outline: none; }
 :focus-visible { outline: var(--stroke) dashed var(--ink); outline-offset: 2px; }
+[data-input="touch"] :focus-visible { outline: none; }
 
 /* 進度條：底是 50% 抖色網點（電子紙畫灰色的方式），進度是一格一格的實心段 */
 .meter {
@@ -438,6 +453,7 @@ button { font: inherit; color: inherit; }
   padding: 0;
   overflow-y: auto;
   list-style: none;
+  overscroll-behavior-y: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--mid) transparent;
 }
@@ -636,6 +652,7 @@ button { font: inherit; color: inherit; }
 .panel-body {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   padding: .5em max(12px, calc(var(--dot) * 6)) 1.5em;
   scrollbar-width: thin;
   scrollbar-color: var(--mid) transparent;
@@ -669,6 +686,32 @@ button { font: inherit; color: inherit; }
 .stepper { display: flex; align-items: center; gap: .6em; }
 .stepper output { min-width: 3.5em; text-align: center; }
 .note { margin: .3em 0 0; color: var(--mid); font-size: max(12px, .78em); line-height: 1.6; }
+.setting .note { grid-column: 2; }
+/* 窄螢幕（尤其液晶的 24px 像素介面）：標題與選項上下排，選項才放得下 */
+@media (max-width: 420px) {
+  .setting { grid-template-columns: 1fr; gap: .35em; }
+  .setting .note { grid-column: 1; }
+}
+/* 手指操作時，按鈕至少 44px 見方（Apple HIG／WCAG 2.5.5 的建議尺寸） */
+@media (pointer: coarse) {
+  .btn { min-height: 44px; min-width: 44px; }
+  .toc button { min-height: 44px; }
+  .opts, .stepper { gap: 8px; }
+}
+
+.tip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5em 1em;
+  margin: 0;
+  padding: .7em max(12px, calc(var(--dot) * 6));
+  border-bottom: 1px dashed var(--line);
+  color: var(--mid);
+  font-size: max(12px, .8em);
+  line-height: 1.6;
+}
+[data-material="lcd"] .tip { font-size: 12px; }
 [data-material="lcd"] .note { font-size: 12px; }
 .metrics { margin: 1em 0 0; padding: .6em .8em; border: 1px dashed var(--line); color: var(--mid); font-size: max(12px, .78em); line-height: 1.7; }
 [data-material="lcd"] .metrics { font-size: 12px; }

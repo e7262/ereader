@@ -94,6 +94,13 @@
       lang: firstText(opf, DC, 'language'),
     };
 
+    // 沒標語言、或只寫 zh 時，從前幾章的文字判斷繁簡（lang 會影響手機選用的字形）
+    if (!meta.lang || /^zh$/i.test(meta.lang)) {
+      let sample = '';
+      for (const path of spine.slice(0, 4)) sample += ((await zip.text(path)) || '').replace(/<[^>]*>/g, '');
+      meta.lang = R.txt.guessLang(sample);
+    }
+
     // ---------- 目錄 ----------
     const toc = [];
     function addEntry(title, href, baseDir, depth) {
