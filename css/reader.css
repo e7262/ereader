@@ -1,0 +1,706 @@
+/* ==========================================================================
+   墨屏閱讀器：電子紙／反射式液晶的材質模擬 + 護眼排版
+   色彩全部集中在「材質 × 光線」六組 token；介面裡不使用漸層、陰影、圓角動畫這類
+   電子紙或點陣液晶本來畫不出來的效果（材質本身的光影例外，集中在 .fx-* 疊層）。
+   ========================================================================== */
+
+@font-face {
+  font-family: "Fusion Pixel TC";
+  src: url("../fonts/fusion-pixel-12px-proportional-tc.woff2") format("woff2");
+  font-display: swap;
+}
+
+:root {
+  --font-serif: "Noto Serif TC", "Noto Serif CJK TC", "Source Han Serif TC", "Source Han Serif", "Songti TC", "PMingLiU", "MingLiU", "Noto Serif SC", "Noto Serif CJK SC", "Songti SC", "SimSun", Georgia, serif;
+  --font-sans: "Noto Sans TC", "Noto Sans CJK TC", "Source Han Sans TC", "PingFang TC", "Microsoft JhengHei", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-kai: "TW-Kai", "BiauKai", "DFKai-SB", "Kaiti TC", "STKaiti", "KaiTi", "LXGW WenKai TC", "LXGW WenKai", "Noto Serif TC", serif;
+  --font-pixel: "Fusion Pixel TC", ui-monospace, monospace;
+
+  /* 由 app.js 依設定寫入 */
+  --fs: 20px;
+  --lh: 37px;
+  --para: 7px;
+  --indent: 2em;
+  --dot: 2px;
+  --dim: 0;
+  --body-font: var(--font-serif);
+
+  --ui-font: var(--font-sans);
+  --ui-size: 15px;
+  --st-size: 12px;
+  --bar-h: 28px;
+  --radius: 6px;
+  --stroke: 1.5px;
+}
+
+/* ---------- 材質 × 光線：六組色票（對比值見 docs/eye-care-research.md） ---------- */
+
+/* 電子紙・日光：E Ink 霧面紙色，非純白；墨色非純黑。文字對比 11.7:1 */
+:root,
+[data-material="paper"][data-light="day"] {
+  --bg: #e4e1d8;
+  --ink: #262522;
+  --mid: #5c5850;
+  --line: #a7a397;
+  --desk: #8e8b84;
+  --shell: #2b2c2f;
+  --shell-hi: #393a3e;
+  --shell-ink: #8a8c91;
+  --key: #3a3b40;
+  --key-ink: #b9bbc0;
+  --img-filter: url(#eink16) contrast(1.02);
+  --img-blend: multiply;
+}
+/* 電子紙・暖光：模擬暖色前光（如閱讀器的色溫調整），亮度與藍光成分都降低。對比 9.5:1 */
+[data-material="paper"][data-light="dusk"] {
+  --bg: #dbc9a5;
+  --ink: #2c2317;
+  --mid: #5a4b35;
+  --line: #a8956f;
+  --desk: #5e5545;
+  --shell: #262421;
+  --shell-hi: #32302c;
+  --shell-ink: #7d766b;
+  --key: #35322d;
+  --key-ink: #a49b8c;
+  --img-filter: url(#eink16) sepia(.35);
+  --img-blend: multiply;
+}
+/* 電子紙・夜間：電子紙的深色模式，暗底暖灰字（不用純白字以減少光暈）。對比 7.8:1 */
+[data-material="paper"][data-light="night"] {
+  --bg: #1c1a17;
+  --ink: #b8ad99;
+  --mid: #8a8172;
+  --line: #4a453d;
+  --desk: #0d0c0b;
+  --shell: #171716;
+  --shell-hi: #1f1f1e;
+  --shell-ink: #4d4b47;
+  --key: #232220;
+  --key-ink: #6b675f;
+  --img-filter: url(#eink16) brightness(.7) contrast(.9);
+  --img-blend: normal;
+}
+/* 液晶・日光：STN 反射式點陣液晶（電子雞／掌機）的灰綠底。對比 8.0:1 */
+[data-material="lcd"][data-light="day"] {
+  --bg: #adb88e;
+  --ink: #172012;
+  --mid: #3c4831;
+  --line: #7f8b63;
+  --desk: #7b7a72;
+  --shell: #cfcabf;
+  --shell-hi: #dcd8ce;
+  --shell-ink: #6c6a8c;
+  --surround: #575a6b;
+  --key: #8f2a52;
+  --key-ink: #f1e6ea;
+  --grid-gap: rgba(232, 240, 205, .30);
+  --lcd-shadow: rgba(24, 34, 16, .22);
+  --img-filter: url(#lcd4);
+  --img-blend: multiply;
+}
+/* 液晶・暖光：琥珀色背光的正像液晶，幾乎不含藍光。對比 7.5:1 */
+[data-material="lcd"][data-light="dusk"] {
+  --bg: #c99f5a;
+  --ink: #1e1305;
+  --mid: #4f3510;
+  --line: #9c7637;
+  --desk: #4b4033;
+  --shell: #a39c8e;
+  --shell-hi: #aea799;
+  --shell-ink: #5c566b;
+  --surround: #45464f;
+  --key: #6e2541;
+  --key-ink: #d9c9cf;
+  --grid-gap: rgba(255, 226, 170, .28);
+  --lcd-shadow: rgba(40, 22, 0, .24);
+  --img-filter: url(#lcd4) sepia(1);
+  --img-blend: multiply;
+}
+/* 液晶・夜間：琥珀色負像液晶（暗底亮字），發光的只有字，藍光比例最低。對比 8.0:1 */
+[data-material="lcd"][data-light="night"] {
+  --bg: #16100a;
+  --ink: #e09b42;
+  --mid: #a8742f;
+  --line: #5a3c17;
+  --desk: #0b0907;
+  --shell: #2a2622;
+  --shell-hi: #312c28;
+  --shell-ink: #5d5348;
+  --surround: #15130f;
+  --key: #3d2117;
+  --key-ink: #a07a52;
+  --grid-gap: rgba(0, 0, 0, .55);
+  --lcd-shadow: rgba(224, 155, 66, .28);
+  --img-filter: url(#lcd4) invert(1) sepia(1) saturate(2.4) hue-rotate(-12deg) brightness(.75);
+  --img-blend: screen;
+}
+
+[data-light="night"] { color-scheme: dark; }
+[data-light="day"], [data-light="dusk"] { color-scheme: light; }
+
+/* 系統要求更高對比時：次要文字也改用主墨色 */
+@media (prefers-contrast: more) {
+  :root { --mid: var(--ink); --line: var(--ink); }
+}
+
+/* 液晶介面：像素字型、方角、粗筆畫 */
+[data-material="lcd"] {
+  --ui-font: var(--font-pixel);
+  --ui-size: 24px;
+  --st-size: 12px;
+  --bar-h: calc(var(--dot) * 14);
+  --radius: 0;
+  --stroke: var(--dot);
+}
+
+/* ---------- 版面：桌面上是一台「裝置」，手機上螢幕就是整個畫面 ---------- */
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--desk);
+  font-family: var(--ui-font);
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+  text-size-adjust: 100%;
+}
+[hidden] { display: none !important; }
+button { font: inherit; color: inherit; }
+
+.device {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  margin: 0 auto;
+}
+.shell-head, .keys, .led { display: none; }
+.bezel { position: relative; flex: 1; display: flex; min-height: 0; }
+
+.screen {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--ui-font);
+  font-size: var(--ui-size);
+  line-height: 1.5;
+  isolation: isolate;
+}
+.content {
+  position: absolute;
+  inset: 0;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+@media (min-width: 760px) and (min-height: 640px) {
+  [data-frame="on"] body { display: grid; place-items: center; }
+  [data-frame="on"] .device {
+    width: min(calc((100dvh - 56px) * .7), 740px);
+    height: min(calc(100dvh - 56px), 1060px);
+    padding: 0 24px;
+    border-radius: 30px;
+    background:
+      radial-gradient(120% 60% at 30% 0%, var(--shell-hi), transparent 70%),
+      var(--shell);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, .08) inset,
+      0 -2px 0 rgba(0, 0, 0, .25) inset,
+      0 24px 50px -20px rgba(0, 0, 0, .55),
+      0 2px 6px rgba(0, 0, 0, .3);
+  }
+  [data-frame="on"] .shell-head {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 30px;
+    color: var(--shell-ink);
+    font: 600 10px/1 var(--font-sans);
+    letter-spacing: .32em;
+    text-transform: uppercase;
+    user-select: none;
+  }
+  [data-frame="on"] .bezel {
+    border-radius: 4px;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), 0 1px 0 1px rgba(255, 255, 255, .06);
+  }
+  [data-frame="on"] .keys {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    height: 74px;
+  }
+  /* 液晶外殼：米灰塑膠機身 + 深色鏡框，像掌上遊戲機 */
+  [data-frame="on"][data-material="lcd"] .device {
+    border-radius: 18px 18px 54px 18px;
+    padding: 0 26px;
+  }
+  [data-frame="on"][data-material="lcd"] .shell-head {
+    height: 34px;
+    color: var(--shell-ink);
+    font: italic 700 11px/1 var(--font-sans);
+    letter-spacing: .18em;
+  }
+  [data-frame="on"][data-material="lcd"] .bezel {
+    padding: 22px 26px 26px 34px;
+    border-radius: 10px 10px 34px 10px;
+    background: var(--surround);
+    box-shadow: inset 0 2px 3px rgba(0, 0, 0, .35);
+  }
+  [data-frame="on"][data-material="lcd"] .led {
+    display: block;
+    position: absolute;
+    left: 12px;
+    top: 46%;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--led, #3a8a3a);
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, .25), 0 0 6px var(--led, #3a8a3a);
+    opacity: .85;
+  }
+  [data-frame="on"][data-material="lcd"] .screen {
+    box-shadow: 0 0 0 2px rgba(0, 0, 0, .35);
+  }
+  [data-frame="on"][data-material="lcd"] .keys { height: 104px; gap: 30px; }
+}
+
+.brand-lcd { display: none; }
+[data-material="lcd"] .brand-paper { display: none; }
+[data-material="lcd"] .brand-lcd { display: inline; }
+
+/* 實體按鍵 */
+.key {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 22px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--key);
+  color: var(--key-ink);
+  font: 12px/1 var(--font-sans);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .08) inset, 0 2px 0 rgba(0, 0, 0, .45);
+  cursor: pointer;
+}
+.key:active { transform: translateY(1px); box-shadow: 0 1px 0 rgba(0, 0, 0, .45); }
+[data-material="lcd"] .key {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  font-size: 14px;
+  box-shadow: 0 2px 0 rgba(255, 255, 255, .25) inset, 0 3px 0 rgba(0, 0, 0, .35), 0 4px 8px rgba(0, 0, 0, .2);
+}
+[data-material="lcd"] .key:active { transform: translateY(2px); box-shadow: 0 1px 0 rgba(0, 0, 0, .35); }
+.key-label {
+  display: block;
+  margin-top: 6px;
+  color: var(--shell-ink);
+  font: 700 10px/1 var(--font-sans);
+  letter-spacing: .1em;
+  text-align: center;
+}
+.key-wrap { display: flex; flex-direction: column; align-items: center; }
+[data-material="paper"] .key-label { display: none; }
+
+/* ---------- 材質疊層（不攔截點擊） ---------- */
+
+.fx { position: absolute; inset: 0; pointer-events: none; }
+.fx-texture { z-index: 50; }
+.fx-glass { z-index: 51; }
+.fx-dim { z-index: 60; background: #000; opacity: var(--dim); }
+.fx-flash { z-index: 70; opacity: 0; }
+.fx-flash.black { opacity: 1; background: var(--ink); }
+.fx-flash.white { opacity: 1; background: var(--bg); }
+
+/* 電子紙：細顆粒 + 大片不均勻的斑駁（微膠囊與紙纖維的感覺） */
+[data-material="paper"] .fx-texture {
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1.5 0 0 0 -.62'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='600'%3E%3Cfilter id='m'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.012' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 .4 0 0 0 -.17'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23m)'/%3E%3C/svg%3E");
+  mix-blend-mode: multiply;
+  opacity: .32;
+}
+[data-material="paper"][data-light="night"] .fx-texture { mix-blend-mode: normal; opacity: .22; }
+/* 前光由下緣打上來的微弱亮度落差 + 四角略暗 */
+[data-material="paper"] .fx-glass {
+  background:
+    linear-gradient(to top, rgba(255, 252, 240, .06), transparent 22%),
+    radial-gradient(130% 95% at 50% 45%, transparent 62%, rgba(0, 0, 0, .07));
+}
+
+/* 液晶：點陣格線（點與點之間透出的反射板）+ 玻璃反光 */
+[data-material="lcd"] .fx-texture {
+  --gw: max(.5px, calc(var(--dot) * .24));
+  background-image:
+    linear-gradient(to right, var(--grid-gap) var(--gw), transparent var(--gw)),
+    linear-gradient(to bottom, var(--grid-gap) var(--gw), transparent var(--gw));
+  background-size: var(--dot) var(--dot);
+  opacity: .6;
+}
+[data-material="lcd"] .fx-glass {
+  background: linear-gradient(160deg, rgba(255, 255, 255, .10), rgba(255, 255, 255, 0) 38%);
+  box-shadow: inset 2px 3px 6px rgba(0, 0, 0, .28);
+}
+[data-material="lcd"][data-light="night"] .fx-glass {
+  background: linear-gradient(160deg, rgba(255, 255, 255, .035), rgba(255, 255, 255, 0) 38%);
+}
+/* 液晶層投在反射板上的影子：所有「墨」都帶一道往右下偏的淡影 */
+[data-material="lcd"] .content {
+  filter: drop-shadow(calc(var(--dot) * .6) calc(var(--dot) * .9) calc(var(--dot) * .4) var(--lcd-shadow));
+}
+[data-material="lcd"][data-light="night"] .content {
+  filter: drop-shadow(0 0 calc(var(--dot) * .8) var(--lcd-shadow));
+}
+
+[data-texture="full"][data-material="paper"] .fx-texture { opacity: .5; }
+[data-texture="full"][data-material="lcd"] .fx-texture { opacity: 1; }
+[data-texture="off"] .fx-texture,
+[data-texture="off"] .fx-glass { display: none; }
+[data-texture="off"][data-material] .content { filter: none; }
+
+/* ---------- 共用介面元件 ---------- */
+
+.view { position: absolute; inset: 0; display: flex; flex-direction: column; }
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: .5em;
+  min-height: calc(var(--ui-size) * 2.4);
+  padding: 0 max(12px, calc(var(--dot) * 6));
+  border-bottom: var(--stroke) solid var(--ink);
+  background: var(--bg);
+}
+.bar-title {
+  flex: 1;
+  margin: 0;
+  overflow: hidden;
+  font-size: 1.1em;
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+[data-material="lcd"] .bar-title { font-size: 1em; font-weight: normal; }
+.bar.foot {
+  min-height: var(--bar-h);
+  border-top: var(--stroke) solid var(--ink);
+  border-bottom: 0;
+  color: var(--mid);
+  font-size: var(--st-size);
+  justify-content: space-between;
+}
+
+.btn {
+  min-height: 2em;
+  padding: .2em .75em;
+  border: var(--stroke) solid var(--ink);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--ink);
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.btn:active,
+.btn[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.btn.quiet { border-color: transparent; }
+[data-material="lcd"] .btn[aria-pressed="true"]::before { content: "▶"; margin-right: .25em; }
+
+:focus { outline: none; }
+:focus-visible { outline: var(--stroke) dashed var(--ink); outline-offset: 2px; }
+
+/* 進度條：底是 50% 抖色網點（電子紙畫灰色的方式），進度是一格一格的實心段 */
+.meter {
+  position: relative;
+  display: inline-block;
+  height: max(6px, calc(var(--dot) * 3));
+  background: repeating-conic-gradient(var(--line) 0 25%, transparent 0 50%) 0 0 / 2px 2px;
+}
+.meter > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(var(--p, 0) * 1%);
+  background: repeating-linear-gradient(90deg, var(--ink) 0 5px, transparent 5px 7px);
+  outline: 1px solid var(--bg);
+}
+
+/* ---------- 書架 ---------- */
+
+.books {
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--mid) transparent;
+}
+.book {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--line);
+}
+.book-open {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: .25em 1em;
+  min-width: 0;
+  padding: .9em max(12px, calc(var(--dot) * 6));
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.book-open:active, .book-open:focus-visible, .book-open.cursor { background: var(--ink); color: var(--bg); outline: none; }
+.book-open:active .book-meta, .book-open:focus-visible .book-meta, .book-open.cursor .book-meta { color: var(--bg); }
+.book-title {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+[data-material="lcd"] .book-title { font-weight: normal; }
+.book-meta {
+  overflow: hidden;
+  color: var(--mid);
+  font-size: max(12px, .8em);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+[data-material="lcd"] .book-meta { font-size: 12px; }
+.book .meter { grid-column: 1 / -1; width: 100%; }
+.book-del {
+  flex: none;
+  padding: 0 1em;
+  border: 0;
+  border-left: 1px solid var(--line);
+  background: transparent;
+  color: var(--mid);
+  font-size: max(12px, .75em);
+  cursor: pointer;
+}
+[data-material="lcd"] .book-del { font-size: 12px; }
+.book-del.armed { background: var(--ink); color: var(--bg); }
+
+.empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .6em;
+  padding: 1.5em;
+  text-align: center;
+}
+.empty p { margin: 0; }
+.empty .hint { color: var(--mid); font-size: max(12px, .8em); line-height: 1.7; }
+[data-material="lcd"] .empty .hint { font-size: 12px; }
+.sprite { width: 96px; height: 96px; color: var(--ink); }
+.sprite svg { display: block; width: 100%; height: 100%; }
+.sprite.big { width: 128px; height: 128px; }
+
+.dropping .content::after {
+  content: "放開以匯入";
+  position: absolute;
+  inset: 12px;
+  display: grid;
+  place-items: center;
+  border: var(--stroke) dashed var(--ink);
+  background: var(--bg);
+  font-size: 1.2em;
+  z-index: 40;
+}
+
+/* ---------- 閱讀頁 ---------- */
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 1em;
+  height: var(--bar-h);
+  padding: 0 max(14px, calc(var(--dot) * 7));
+  color: var(--mid);
+  font-size: var(--st-size);
+  line-height: 1;
+  white-space: nowrap;
+  user-select: none;
+}
+.status > :first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.status .meter { width: 22%; min-width: 60px; }
+.page-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  touch-action: pinch-zoom;
+  cursor: default;
+}
+
+.flow {
+  position: absolute;
+  column-fill: auto;
+  color: var(--ink);
+  font-family: var(--body-font);
+  font-size: var(--fs);
+  line-height: var(--lh);
+  font-kerning: normal;
+  text-align: justify;
+  text-justify: inter-character;
+  text-autospace: normal;
+  line-break: strict;
+  overflow-wrap: break-word;
+  hanging-punctuation: allow-end;
+  orphans: 2;
+  widows: 2;
+}
+.flow p { margin: 0 0 var(--para); text-indent: var(--indent); }
+.flow h1, .flow h2, .flow h3, .flow h4, .flow h5, .flow h6 {
+  margin: 0 0 1em;
+  font-size: 1.2em;
+  line-height: 1.5;
+  text-indent: 0;
+  text-align: center;
+  break-after: avoid;
+}
+.flow h4, .flow h5, .flow h6 { font-size: 1.05em; }
+.flow img {
+  display: block;
+  max-width: 100%;
+  max-height: var(--col-h);
+  margin: 0 auto var(--para);
+  object-fit: contain;
+  break-inside: avoid;
+  filter: var(--img-filter);
+  mix-blend-mode: var(--img-blend);
+}
+.flow .ac { text-align: center; text-indent: 0; }
+.flow h1.ac { margin-top: 2em; }
+.flow .ar { text-align: right; text-indent: 0; }
+.flow blockquote { margin: 0 0 var(--para) 2em; }
+.flow ul, .flow ol { margin: 0 0 var(--para); padding-left: 2em; }
+.flow li, .flow dt, .flow dd, .flow figcaption, .flow td, .flow th, .flow caption { text-indent: 0; }
+.flow dd { margin-left: 2em; }
+.flow pre { margin: 0 0 var(--para); white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: .85em; }
+.flow table { border-collapse: collapse; margin: 0 0 var(--para); font-size: .9em; }
+.flow td, .flow th { padding: .2em .45em; border: 1px solid var(--line); }
+.flow hr { margin: 1em 25%; border: 0; border-top: 1px solid var(--line); }
+.flow figure { margin: 0 0 var(--para); }
+.flow rt { font-size: .5em; }
+.flow a[data-href] { color: inherit; text-decoration: underline dotted; text-underline-offset: .2em; cursor: pointer; }
+.flow > .end { height: 0; margin: 0; }
+
+/* 像素字：關掉所有會造成小數像素的排版（左右對齊、中西文自動間距、仿粗體） */
+[data-pixel="on"] .flow {
+  text-align: start;
+  text-autospace: no-autospace;
+  font-synthesis: none;
+  -webkit-font-smoothing: none;
+}
+[data-pixel="on"] .flow h1, [data-pixel="on"] .flow h2, [data-pixel="on"] .flow h3,
+[data-pixel="on"] .flow h4, [data-pixel="on"] .flow h5, [data-pixel="on"] .flow h6 {
+  font-size: 1em;
+  font-weight: normal;
+  line-height: var(--lh);
+  text-align: start;
+}
+
+/* 暗底亮字時，字在視覺上會「變粗、發散」，稍微拉開字距抵銷 */
+[data-light="night"] .flow { letter-spacing: .02em; -webkit-font-smoothing: antialiased; }
+[data-light="night"][data-pixel="on"] .flow { letter-spacing: 0; }
+
+/* 選單（點畫面中央叫出） */
+.menu { position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column; justify-content: space-between; pointer-events: none; }
+.menu > .bar { pointer-events: auto; }
+.menu-bottom { border-top: var(--stroke) solid var(--ink); border-bottom: 0; flex-wrap: wrap; padding-block: .4em; }
+.menu-info { flex: 1; color: var(--mid); font-size: max(12px, .75em); text-align: right; }
+[data-material="lcd"] .menu-info { font-size: 12px; }
+
+/* ---------- 面板：目錄、設定、休息提醒 ---------- */
+
+.panel {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: .5em max(12px, calc(var(--dot) * 6)) 1.5em;
+  scrollbar-width: thin;
+  scrollbar-color: var(--mid) transparent;
+}
+
+.toc { margin: 0; padding: 0; list-style: none; }
+.toc button {
+  display: block;
+  width: 100%;
+  padding: .55em .25em;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.toc button[data-depth="1"] { padding-left: 1.5em; }
+.toc button[data-depth="2"] { padding-left: 2.75em; }
+.toc button[aria-current="true"], .toc button:active { background: var(--ink); color: var(--bg); }
+
+.setting {
+  display: grid;
+  grid-template-columns: 4.2em 1fr;
+  align-items: center;
+  gap: .5em;
+  padding: .55em 0;
+  border-bottom: 1px solid var(--line);
+}
+.setting > span { color: var(--mid); }
+.opts { display: flex; flex-wrap: wrap; gap: .4em; }
+.stepper { display: flex; align-items: center; gap: .6em; }
+.stepper output { min-width: 3.5em; text-align: center; }
+.note { margin: .3em 0 0; color: var(--mid); font-size: max(12px, .78em); line-height: 1.6; }
+[data-material="lcd"] .note { font-size: 12px; }
+.metrics { margin: 1em 0 0; padding: .6em .8em; border: 1px dashed var(--line); color: var(--mid); font-size: max(12px, .78em); line-height: 1.7; }
+[data-material="lcd"] .metrics { font-size: 12px; }
+
+.rest {
+  align-items: center;
+  justify-content: center;
+  gap: .7em;
+  padding: 1.5em;
+  text-align: center;
+}
+.rest h2 { margin: 0; font-size: 1.15em; }
+[data-material="lcd"] .rest h2 { font-size: 1em; font-weight: normal; }
+.rest p { margin: 0; color: var(--mid); line-height: 1.7; }
+.countdown { font: 48px/1 var(--font-pixel); letter-spacing: .1em; }
+
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--bar-h) + 16px);
+  z-index: 45;
+  max-width: calc(100% - 32px);
+  padding: .5em 1em;
+  transform: translateX(-50%);
+  border: var(--stroke) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-size: max(12px, .85em);
+  text-align: center;
+}
+[data-material="lcd"] .toast { font-size: 12px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
