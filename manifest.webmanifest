@@ -3,7 +3,6 @@
   "short_name": "墨屏",
   "description": "在瀏覽器裡閱讀自己的 TXT／EPUB：模擬電子紙與反射式點陣液晶，以護眼為導向的極簡閱讀器。",
   "lang": "zh-Hant",
-  "id": "./",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

@@ -210,6 +210,15 @@ button { font: inherit; color: inherit; }
   bottom: env(safe-area-inset-bottom, 0px);
   left: env(safe-area-inset-left, 0px);
 }
+/* 安全範圍的寬度（例如 47px）不一定是點距的倍數；往上取整到點距，液晶的像素字才會繼續對齊點陣 */
+@supports (top: round(up, 1px, 2px)) {
+  .content {
+    top: round(up, env(safe-area-inset-top, 0px), var(--dot));
+    right: round(up, env(safe-area-inset-right, 0px), var(--dot));
+    bottom: round(up, env(safe-area-inset-bottom, 0px), var(--dot));
+    left: round(up, env(safe-area-inset-left, 0px), var(--dot));
+  }
+}
 
 @media (min-width: 760px) and (min-height: 640px) {
   [data-frame="on"] body { display: grid; place-items: center; background: var(--desk); }
@@ -506,12 +515,16 @@ button { font: inherit; color: inherit; }
 [data-material="lcd"] .book-del { font-size: 12px; }
 .book-del.armed { background: var(--ink); color: var(--bg); }
 
+.view > .bar, .view > .tip { flex-shrink: 0; }
 .empty {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  justify-content: safe center; /* 手機橫放時放不下就可以捲動，不會把按鈕擠出畫面 */
   gap: .6em;
   padding: 1.5em;
   text-align: center;
@@ -520,6 +533,7 @@ button { font: inherit; color: inherit; }
 .empty .hint { color: var(--mid); font-size: max(12px, .8em); line-height: 1.7; }
 [data-material="lcd"] .empty .hint { font-size: 12px; }
 .sprite { width: 96px; height: 96px; color: var(--ink); }
+@media (max-height: 480px) { .empty .sprite { display: none; } } /* 手機橫放：先讓按鈕放得下 */
 .sprite svg { display: block; width: 100%; height: 100%; }
 .sprite.big { width: 128px; height: 128px; }
 
@@ -695,8 +709,12 @@ button { font: inherit; color: inherit; }
 /* 手指操作時，按鈕至少 44px 見方（Apple HIG／WCAG 2.5.5 的建議尺寸） */
 @media (pointer: coarse) {
   .btn { min-height: 44px; min-width: 44px; }
+  .bar { min-height: 56px; }
   .toc button { min-height: 44px; }
   .opts, .stepper { gap: 8px; }
+  /* 平板外框上的扁長實體鍵：外觀不變，可點範圍放大到 44px 高 */
+  .key { position: relative; }
+  .key::before { content: ""; position: absolute; inset: -11px -4px; }
 }
 
 .tip {
@@ -730,12 +748,14 @@ button { font: inherit; color: inherit; }
 
 .toast {
   position: absolute;
-  left: 50%;
+  left: 16px;
+  right: 16px;
   bottom: calc(var(--bar-h) + 16px);
   z-index: 45;
+  width: fit-content;
   max-width: calc(100% - 32px);
+  margin-inline: auto;
   padding: .5em 1em;
-  transform: translateX(-50%);
   border: var(--stroke) solid var(--ink);
   border-radius: var(--radius);
   background: var(--bg);

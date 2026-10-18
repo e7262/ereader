@@ -101,6 +101,8 @@
   }
 
   function applySettings() {
+    // 先記下目前頁首是哪一句，再改 CSS；否則字已經用新字級重排，量到的位置會往前偏
+    if (current && current.ready && pager.doc && !pager.busy && !pager.sticky) pager.sticky = pager.position();
     const t = typography();
     root.dataset.material = settings.material;
     root.dataset.light = resolveLight();
@@ -115,7 +117,8 @@
     st.setProperty('--indent', settings.indent ? '2em' : '0');
     st.setProperty('--body-font', 'var(--font-' + t.font + ')');
     st.setProperty('--dim', ((100 - settings.brightness) / 100).toFixed(2));
-    $('meta[name="theme-color"]').content = getComputedStyle(root).getPropertyValue('--bg').trim();
+    // 狀態列／網址列的顏色也照軟體調暗的比例變暗，不要在變暗的頁面上方留一條亮帶
+    $('meta[name="theme-color"]').content = dimHex(getComputedStyle(root).getPropertyValue('--bg').trim(), settings.brightness / 100);
 
     const snapUnit = t.pixel || settings.material === 'lcd' ? t.dot : 1;
     pager.configure({
@@ -165,6 +168,12 @@
   // 用觸控時不要在按鈕上畫焦點框；用鍵盤時才畫
   function focusQuiet(target) {
     if (target) target.focus({ preventScroll: true, focusVisible: root.dataset.input === 'key' });
+  }
+
+  function dimHex(hex, k) {
+    const m = hex.replace('#', '').match(/../g);
+    if (!m) return hex;
+    return '#' + m.map((h) => Math.round(parseInt(h, 16) * k).toString(16).padStart(2, '0')).join('');
   }
 
   function hhmm(d) { return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
@@ -239,7 +248,7 @@
   function popLayer() {
     if (backPending) return; // 連點兩下「關閉」時，第二下不要再退一層而離開閱讀器
     if (layers() > 0 && navDepth() === layers()) {
-      backPending = setTimeout(() => { backPending = 0; }, 800);
+      backPending = setTimeout(() => { backPending = 0; }, 350);
       history.back();
     } else {
       closeTopLayer();
@@ -249,8 +258,8 @@
   }
 
   window.addEventListener('popstate', () => {
-    clearTimeout(backPending);
-    backPending = 0;
+    // 書還在載入時按了返回：取消這次開書
+    if (opening && navDepth() === 0) cancelOpen();
     for (let guard = 3; guard > 0 && layers() > navDepth(); guard--) closeTopLayer();
     trimHistory();
   });
@@ -359,6 +368,7 @@
           lastReadAt: 0,
           pct: 0,
           pos: null,
+          lang: doc.meta.lang || '',
         };
         const type = file.type || (ext === 'epub' ? 'application/epub+zip' : 'text/plain');
         await R.db.addBook(book, new Blob([buf], { type }));
@@ -378,28 +388,62 @@
 
   // ---------------------------------------------------------------- 閱讀
 
+  // 開書是非同步的（讀檔、解壓、排版）。每次開書拿一個序號，按了返回就作廢；
+  // 載入期間書架暫停操作，避免連點或點到別本書時，最後蓋上來的是使用者已經不要的那本
+  let openSeq = 0;
+  let opening = false;
+  let openingToast = 0;
+
+  function setOpening(on) {
+    opening = on;
+    els.library.inert = on;
+    clearTimeout(openingToast);
+    if (on) openingToast = setTimeout(() => toast('開啟中…', 0), 400);
+    else if (els.toast.textContent === '開啟中…') els.toast.hidden = true;
+  }
+
+  function cancelOpen() {
+    openSeq++;
+    setOpening(false);
+  }
+
   async function openBook(id) {
+    if (opening) return;
+    const req = ++openSeq;
     // 在點擊當下就記一層紀錄：Safari 只承認使用者操作後不久建立的紀錄，大本 EPUB 解析可能要一點時間
     const pushed = !current && navDepth() === 0;
     if (pushed) history.pushState({ [NAV]: 1 }, '');
+    setOpening(true);
+    let doc = null;
     try {
       const [book, blob] = await Promise.all([R.db.getBook(id), R.db.getFile(id)]);
+      if (req !== openSeq) return;
       if (!book || !blob) throw new Error('找不到檔案');
       const buf = await blob.arrayBuffer();
-      const doc = book.format === 'epub' ? await R.epub.parse(buf) : R.txt.parse(buf, book.fileName || book.title);
-      if (pushed && navDepth() !== 1) { doc.dispose(); return; } // 載入途中已經按了返回
+      if (req !== openSeq) return;
+      doc = book.format === 'epub' ? await R.epub.parse(buf, { lang: book.lang }) : R.txt.parse(buf, book.fileName || book.title);
+      if (req !== openSeq) { doc.dispose(); return; }
+      if (!book.lang && doc.meta.lang) { book.lang = doc.meta.lang; R.db.putBook(book).catch(() => {}); }
       closeBook();
-      current = { book, doc, total: doc.chapters.reduce((s, c) => s + c.size, 0) };
+      // ready：第一次排版完成前不存進度，否則會把還沒排好的位置（第 0 頁）寫回去
+      current = { book, doc, total: doc.chapters.reduce((s, c) => s + c.size, 0), ready: false };
+      setOpening(false);
       showView('reader');
       pushLayer();
       els.toast.hidden = true; // 匯入時的提示不要帶進閱讀頁
       els.stTitle.textContent = book.title;
       session.lastInput = Date.now();
       await pager.open(doc, book.pos);
-      holdWake();
+      if (current && current.doc === doc) {
+        current.ready = true;
+        holdWake();
+      }
     } catch (err) {
+      if (req !== openSeq) return;
       console.error(err);
+      setOpening(false);
       toast('無法開啟：' + err.message, 5000);
+      if (doc && !(current && current.doc === doc)) doc.dispose();
       closeBook();
       showView('library');
       trimHistory();
@@ -409,17 +453,22 @@
   function closeBook() {
     if (!current) return;
     dropWake();
-    saveProgress();
-    pager.close();
-    current.doc.dispose();
-    current = null;
+    restDue = false;
+    try {
+      saveProgress();
+    } finally {
+      pager.close();
+      current.doc.dispose();
+      current = null;
+    }
   }
 
   function overallPct() {
     const chs = current.doc.chapters;
+    const ch = Math.min(pager.ch, chs.length - 1);
     let before = 0;
-    for (let i = 0; i < pager.ch; i++) before += chs[i].size;
-    const within = chs[pager.ch].size * (pager.page + 1) / pager.pages;
+    for (let i = 0; i < ch; i++) before += chs[i].size;
+    const within = chs[ch].size * (pager.page + 1) / pager.pages;
     return Math.min(1, (before + within) / current.total);
   }
 
@@ -435,7 +484,7 @@
   let saveTimer = 0;
   function saveProgress() {
     clearTimeout(saveTimer);
-    if (!current || !pager.doc) return;
+    if (!current || !current.ready || !pager.doc) return;
     const b = current.book;
     b.pos = pager.position();
     b.pct = overallPct();
@@ -455,7 +504,10 @@
     if (!current) return;
     session.lastInput = Date.now();
     holdWake();
-    if (restDue) { restDue = false; showRest(); return; }
+    // 再確認一次：使用者可能已經把提醒關掉、調長，或剛離開休息過
+    const due = restDue && settings.rest && session.active >= settings.rest * 60000;
+    restDue = false;
+    if (due) { showRest(); return; }
     if (!els.menu.hidden) { toggleMenu(false); return; }
     const moved = dir > 0 ? pager.next() : pager.prev();
     if (!moved && !pager.busy) toast(dir > 0 ? '已經是最後一頁' : '已經是第一頁', 1500);
@@ -539,7 +591,7 @@
     },
     { key: 'frame', label: '外框', options: [[true, '顯示'], [false, '隱藏']], note: () => '只在寬螢幕上顯示裝置外殼' },
     {
-      key: 'wake', label: '常亮', options: [[false, '關'], [true, '閱讀時']], when: () => 'wakeLock' in navigator,
+      key: 'wake', label: '常亮', options: [[false, '關'], [true, '閱讀時']], when: wakeLockWorks,
       note: () => settings.wake ? '閱讀時螢幕不自動變暗；三分鐘沒翻頁就恢復自動鎖定' : '',
     },
   ];
@@ -693,8 +745,15 @@
       session.hiddenAt = Date.now();
       saveProgress();
     } else {
-      if (session.hiddenAt && Date.now() - session.hiddenAt > 5 * 60000) session.active = 0; // 離開超過五分鐘，當作已經休息過
-      holdWake();
+      if (session.hiddenAt && Date.now() - session.hiddenAt > 5 * 60000) {
+        session.active = 0; // 離開超過五分鐘，當作已經休息過
+        restDue = false;
+      }
+      if (current && !els.reader.hidden) {
+        session.lastInput = Date.now(); // 回到閱讀頁就算重新開始讀，螢幕常亮才不會立刻被當成閒置而放掉
+        holdWake();
+      }
+      checkForUpdate();
     }
   });
   window.addEventListener('pagehide', saveProgress);
@@ -818,6 +877,8 @@
 
   document.addEventListener('click', (e) => {
     const act = e.target.closest('[data-act]');
+    // 剛按了「關閉」或返回的半秒內，連點的第二下落到底下的按鈕上不算數
+    if (backPending && (act || e.target.closest('[data-close]'))) return;
     if (act) {
       // 點畫面中央叫出選單時，手指放開後瀏覽器補發的 click 可能剛好落在選單按鈕上：
       // 從那次點擊之後還沒有新的按下動作，這個 click 就不是使用者點的
@@ -867,6 +928,14 @@
 
   // ---------------------------------------------------------------- 螢幕常亮（選用）
 
+  // iOS 16.4–18.3 有這個 API，但在主畫面 App 裡不起作用（WebKit bug 254545）
+  function wakeLockWorks() {
+    if (!('wakeLock' in navigator)) return false;
+    const m = navigator.userAgent.match(/OS (\d+)_(\d+)/);
+    if (isIOS && standalone && m && (+m[1] < 18 || (+m[1] === 18 && +m[2] < 4))) return false;
+    return true;
+  }
+
   let wakeSentinel = null;
   let wakePending = false;
   function holdWake() {
@@ -909,6 +978,7 @@
   // iPhone 的 Safari 分頁與「加入主畫面」後的 App 各有各的書架，而且分頁裡的資料久未開啟可能被清掉
   function iosTip() {
     const tip = $('#iosTip');
+    if (!tip) return; // 舊版頁面（更新途中）沒有這個元素
     let seen = false;
     try { seen = localStorage.getItem('ink-lcd-reader:ios-tip') === '1'; } catch (e) { /* 無法存取時照常顯示 */ }
     tip.hidden = !isIOS || standalone || seen;
@@ -936,7 +1006,18 @@
 
   // 離線快取（只在 http/https 下可用；直接開 file:// 時略過）
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
-    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).catch(() => {}));
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(() => checkForUpdate(true), () => {});
+    });
+    navigator.serviceWorker.addEventListener('message', (e) => {
+      if (e.data === 'updated') toast('已下載新版本，下次開啟時套用', 4000);
+    });
+  }
+
+  // 頁面載入完成後才請 service worker 檢查新版，檢查本身不會影響這次開啟用到的檔案
+  function checkForUpdate(now) {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.ready.then((reg) => { if (reg.active) reg.active.postMessage(now ? 'check-now' : 'check'); }, () => {});
   }
 
   // 給除錯／測試用

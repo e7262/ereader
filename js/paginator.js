@@ -263,6 +263,13 @@
       this.token++;
       this.busy = false;
       this.doc = null;
+      // 清掉上一本書的版面狀態，免得下一本還沒排好時被讀到
+      this.ch = 0;
+      this.page = 0;
+      this.pages = 1;
+      this.anchors = [];
+      this.starts = [];
+      this.sticky = null;
       this.flow.replaceChildren();
     }
   }

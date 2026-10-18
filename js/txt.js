@@ -125,15 +125,19 @@
     }
   }
 
-  function guessLang(text) {
+  // fallback：看得出是中文、但分不出繁簡時要回傳的語言標籤
+  function guessLang(text, fallback) {
     const sample = text.slice(0, 20000);
+    // 先看假名：日文裡常見的漢字（時、後、間…）也在繁簡字表裡，不先排除會被當成中文
+    const kana = (sample.match(/[\u3040-\u30ff]/g) || []).length;
+    if (kana > 50 && kana > sample.length * 0.1) return 'ja';
     let t = 0, s = 0;
     for (const ch of sample) {
       if (TRAD.includes(ch)) t++;
       else if (SIMP.includes(ch)) s++;
     }
-    // 判斷不出繁簡時用 zh-Hant：Android 的 Chrome 把單純的 zh 當成簡體，會換成簡體字形
-    if (t + s < 10) return /[\u3040-\u30ff]/.test(sample) ? 'ja' : (/[\u4e00-\u9fff]/.test(sample) ? 'zh-Hant' : 'en');
+    // 判斷不出繁簡時預設 zh-Hant：Android 的 Chrome 把單純的 zh 當成簡體，會換成簡體字形
+    if (t + s < 10) return /[\u4e00-\u9fff]/.test(sample) ? (fallback || 'zh-Hant') : (kana ? 'ja' : 'en');
     return t >= s ? 'zh-Hant' : 'zh-Hans';
   }
 

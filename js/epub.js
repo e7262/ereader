@@ -60,7 +60,8 @@
     return [...root.getElementsByTagNameNS('*', name)];
   }
 
-  async function parse(buffer) {
+  // hints.lang：匯入時已判斷好的語言，開書時就不必再解壓前幾章來猜
+  async function parse(buffer, hints) {
     const zip = R.zip.open(buffer);
 
     const container = parseXML(await zip.text('META-INF/container.xml'));
@@ -94,11 +95,18 @@
       lang: firstText(opf, DC, 'language'),
     };
 
-    // 沒標語言、或只寫 zh 時，從前幾章的文字判斷繁簡（lang 會影響手機選用的字形）
-    if (!meta.lang || /^zh$/i.test(meta.lang)) {
+    // 沒標語言、或只寫 zh 時，從內文判斷繁簡（lang 會影響手機選用的字形）。
+    // 前幾份常是封面、版權頁，字太少判斷不出來，所以一路讀到湊滿約兩萬字為止
+    if (hints && hints.lang) {
+      meta.lang = hints.lang;
+    } else if (!meta.lang || /^zh$/i.test(meta.lang)) {
       let sample = '';
-      for (const path of spine.slice(0, 4)) sample += ((await zip.text(path)) || '').replace(/<[^>]*>/g, '');
-      meta.lang = R.txt.guessLang(sample);
+      for (const path of spine) {
+        if (sample.length >= 20000) break;
+        sample += ((await zip.text(path)) || '').replace(/<[^>]*>/g, '').replace(/\s+/g, '');
+      }
+      // 判斷不出來時：原書寫了 zh 就保留 zh，沒寫才用 zh-Hant
+      meta.lang = R.txt.guessLang(sample, meta.lang || 'zh-Hant');
     }
 
     // ---------- 目錄 ----------
